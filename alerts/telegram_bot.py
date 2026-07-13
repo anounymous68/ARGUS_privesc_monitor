@@ -95,9 +95,16 @@ class TelegramBot:
         ]
         if finding.details:
             # Keep details compact — path/bits are the usual signal
-            for key in ("path", "bits", "change", "mode"):
+            for key in ("path", "bits", "change", "mode", "event"):
                 if key in finding.details:
                     lines.append(f"{key}: {finding.details[key]}")
+            diff = finding.details.get("diff")
+            if diff:
+                text = str(diff)
+                if len(text) > 1500:
+                    text = text[:1500] + "\n…(diff truncated)"
+                lines.append("diff:")
+                lines.append(text)
         return "\n".join(lines)
 
     def format_summary(self, findings: Sequence[Finding]) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Sequence
 
@@ -36,16 +37,22 @@ CREATE INDEX IF NOT EXISTS idx_alerts_timestamp
 
 
 class Database:
-    """Thin SQLite wrapper used by detectors and (later) alert plumbing."""
+    """Thin SQLite wrapper used by detectors and alert plumbing.
+
+    Safe for use from the asyncio event loop and worker threads
+    (``check_same_thread=False`` + a reentrant lock).
+    """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self._conn = sqlite3.connect(self.path)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.executescript(SCHEMA)
-        self._migrate_baselines()
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute("PRAGMA journal_mode=WAL;")
+            self._conn.executescript(SCHEMA)
+            self._migrate_baselines()
+            self._conn.commit()
 
     def _migrate_baselines(self) -> None:
         """Add item_key/payload if upgrading an older Step-1 schema."""
@@ -63,26 +70,29 @@ class Database:
             )
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     def get_baseline_hashes(self, detector_name: str) -> set[str]:
-        cur = self._conn.execute(
-            "SELECT item_hash FROM baselines WHERE detector_name = ?",
-            (detector_name,),
-        )
-        return {row["item_hash"] for row in cur.fetchall()}
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT item_hash FROM baselines WHERE detector_name = ?",
+                (detector_name,),
+            )
+            return {row["item_hash"] for row in cur.fetchall()}
 
     def get_baseline_entries(self, detector_name: str) -> list[sqlite3.Row]:
         """Full baseline rows (needed to describe REMOVED findings)."""
-        cur = self._conn.execute(
-            """
-            SELECT detector_name, item_hash, first_seen, last_seen, item_key, payload
-            FROM baselines
-            WHERE detector_name = ?
-            """,
-            (detector_name,),
-        )
-        return list(cur.fetchall())
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT detector_name, item_hash, first_seen, last_seen, item_key, payload
+                FROM baselines
+                WHERE detector_name = ?
+                """,
+                (detector_name,),
+            )
+            return list(cur.fetchall())
 
     def replace_baselines(
         self, detector_name: str, rows: Sequence[tuple[str, str, str, str, str, str]]
@@ -95,29 +105,36 @@ class Database:
         On conflict: keep original first_seen, refresh last_seen / key / payload.
         Rows absent from this set are deleted so reappearing items re-alert.
         """
-        keep_hashes = {row[1] for row in rows}
-        existing = self.get_baseline_hashes(detector_name)
-        stale = existing - keep_hashes
-        if stale:
-            self._conn.executemany(
-                "DELETE FROM baselines WHERE detector_name = ? AND item_hash = ?",
-                [(detector_name, h) for h in stale],
-            )
-        if rows:
-            self._conn.executemany(
-                """
-                INSERT INTO baselines (
-                    detector_name, item_hash, first_seen, last_seen, item_key, payload
+        with self._lock:
+            keep_hashes = {row[1] for row in rows}
+            existing = {
+                row["item_hash"]
+                for row in self._conn.execute(
+                    "SELECT item_hash FROM baselines WHERE detector_name = ?",
+                    (detector_name,),
+                ).fetchall()
+            }
+            stale = existing - keep_hashes
+            if stale:
+                self._conn.executemany(
+                    "DELETE FROM baselines WHERE detector_name = ? AND item_hash = ?",
+                    [(detector_name, h) for h in stale],
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(detector_name, item_hash) DO UPDATE SET
-                    last_seen = excluded.last_seen,
-                    item_key = excluded.item_key,
-                    payload = excluded.payload
-                """,
-                rows,
-            )
-        self._conn.commit()
+            if rows:
+                self._conn.executemany(
+                    """
+                    INSERT INTO baselines (
+                        detector_name, item_hash, first_seen, last_seen, item_key, payload
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(detector_name, item_hash) DO UPDATE SET
+                        last_seen = excluded.last_seen,
+                        item_key = excluded.item_key,
+                        payload = excluded.payload
+                    """,
+                    rows,
+                )
+            self._conn.commit()
 
     def upsert_baselines(
         self, rows: Sequence[tuple[str, str, str, str]]
@@ -127,16 +144,17 @@ class Database:
 
         Legacy upsert without prune. Prefer replace_baselines for detectors.
         """
-        self._conn.executemany(
-            """
-            INSERT INTO baselines (detector_name, item_hash, first_seen, last_seen)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(detector_name, item_hash) DO UPDATE SET
-                last_seen = excluded.last_seen
-            """,
-            rows,
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO baselines (detector_name, item_hash, first_seen, last_seen)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(detector_name, item_hash) DO UPDATE SET
+                    last_seen = excluded.last_seen
+                """,
+                rows,
+            )
+            self._conn.commit()
 
     def upsert_baseline_entries(
         self, rows: Sequence[tuple[str, str, str, str, str, str]]
@@ -151,20 +169,21 @@ class Database:
         """
         if not rows:
             return
-        self._conn.executemany(
-            """
-            INSERT INTO baselines (
-                detector_name, item_hash, first_seen, last_seen, item_key, payload
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO baselines (
+                    detector_name, item_hash, first_seen, last_seen, item_key, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(detector_name, item_hash) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    item_key = excluded.item_key,
+                    payload = excluded.payload
+                """,
+                rows,
             )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(detector_name, item_hash) DO UPDATE SET
-                last_seen = excluded.last_seen,
-                item_key = excluded.item_key,
-                payload = excluded.payload
-            """,
-            rows,
-        )
-        self._conn.commit()
+            self._conn.commit()
 
     def insert_alert(
         self,
@@ -174,31 +193,34 @@ class Database:
         message: str,
         acknowledged: bool = False,
     ) -> int:
-        cur = self._conn.execute(
-            """
-            INSERT INTO alerts (timestamp, detector_name, severity, message, acknowledged)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (timestamp, detector_name, severity, message, int(acknowledged)),
-        )
-        self._conn.commit()
-        return int(cur.lastrowid)
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                INSERT INTO alerts (timestamp, detector_name, severity, message, acknowledged)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (timestamp, detector_name, severity, message, int(acknowledged)),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
 
     def acknowledge_alert(self, alert_id: int) -> None:
-        self._conn.execute(
-            "UPDATE alerts SET acknowledged = 1 WHERE id = ?",
-            (alert_id,),
-        )
-        self._conn.commit()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE alerts SET acknowledged = 1 WHERE id = ?",
+                (alert_id,),
+            )
+            self._conn.commit()
 
     def recent_alerts(self, limit: int = 50) -> list[sqlite3.Row]:
-        cur = self._conn.execute(
-            """
-            SELECT id, timestamp, detector_name, severity, message, acknowledged
-            FROM alerts
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        )
-        return list(cur.fetchall())
+        with self._lock:
+            cur = self._conn.execute(
+                """
+                SELECT id, timestamp, detector_name, severity, message, acknowledged
+                FROM alerts
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            return list(cur.fetchall())

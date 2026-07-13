@@ -38,3 +38,6 @@ detectors:
 
 logging:
   level: INFO
+  file: logs/privesc_monitor.log
+  max_bytes: 1048576
+  backup_count: 5

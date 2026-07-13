@@ -97,6 +97,8 @@ class ContentWatchDetector(BaseDetector):
         self._cache: dict[str, str] = {}
         self._pending: list[Finding] = []
         self._lock = threading.Lock()
+        self._debounce: dict[str, threading.Timer] = {}
+        self._debounce_seconds = float(self.config.get("debounce_seconds", 0.15))
         self._observer: Observer | None = None
         self._started = False
 
@@ -147,6 +149,11 @@ class ContentWatchDetector(BaseDetector):
 
     def stop(self) -> None:
         """Stop the watchdog observer."""
+        with self._lock:
+            timers = list(self._debounce.values())
+            self._debounce.clear()
+        for timer in timers:
+            timer.cancel()
         if self._observer is not None:
             self._observer.stop()
             self._observer.join(timeout=5)
@@ -236,24 +243,48 @@ class ContentWatchDetector(BaseDetector):
             return
 
         key = str(path)
+        # Coalesce bursts (truncate+write, replace delete+create) into one flush.
+        with self._lock:
+            existing = self._debounce.pop(key, None)
+            if existing is not None:
+                existing.cancel()
+            timer = threading.Timer(
+                self._debounce_seconds,
+                self._flush_path,
+                args=(path, event_type),
+            )
+            timer.daemon = True
+            self._debounce[key] = timer
+            timer.start()
+
+    def _flush_path(self, path: Path, event_type: str) -> None:
+        key = str(path)
+        with self._lock:
+            self._debounce.pop(key, None)
+            old = self._cache.get(key, "")
+
+        if path.exists() and path.is_file():
+            new_content = self._read_text(path)
+            if new_content is None:
+                return
+            new = new_content
+            effective_event = "created" if old == "" and new else event_type
+            if event_type == "deleted" and new:
+                # replace()/rename race: delete seen first, file already back
+                effective_event = "modified"
+        else:
+            new = ""
+            effective_event = "deleted"
+
         with self._lock:
             old = self._cache.get(key, "")
-            if event_type == "deleted":
-                new = ""
-                self._cache.pop(key, None)
-            else:
-                new_content = self._read_text(path)
-                if new_content is None:
-                    return
-                new = new_content
-                if new == old and event_type == "modified":
-                    return  # spurious watchdog bounce
-                self._cache[key] = new
-
             if old == new:
                 return
-
-            finding = self._finding_for_change(path, old, new, event_type)
+            if new:
+                self._cache[key] = new
+            else:
+                self._cache.pop(key, None)
+            finding = self._finding_for_change(path, old, new, effective_event)
             self._pending.append(finding)
 
     def _finding_for_change(
