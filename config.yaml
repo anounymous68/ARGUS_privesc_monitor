@@ -11,7 +11,15 @@ telegram:
 
 detectors:
   # Detectors registered in later steps
-  enabled: []
+  enabled:
+    - suid_check
+  suid_check:
+    scan_paths:
+      - /usr/bin
+      - /usr/sbin
+      - /bin
+      - /sbin
+      - /usr/local/bin
 
 logging:
   level: INFO

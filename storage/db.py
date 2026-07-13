@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 
 SCHEMA = """
@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS baselines (
     item_hash     TEXT NOT NULL,
     first_seen    TEXT NOT NULL,
     last_seen     TEXT NOT NULL,
+    item_key      TEXT NOT NULL DEFAULT '',
+    payload       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (detector_name, item_hash)
 );
 
@@ -42,7 +44,23 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.executescript(SCHEMA)
+        self._migrate_baselines()
         self._conn.commit()
+
+    def _migrate_baselines(self) -> None:
+        """Add item_key/payload if upgrading an older Step-1 schema."""
+        cols = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(baselines)").fetchall()
+        }
+        if "item_key" not in cols:
+            self._conn.execute(
+                "ALTER TABLE baselines ADD COLUMN item_key TEXT NOT NULL DEFAULT ''"
+            )
+        if "payload" not in cols:
+            self._conn.execute(
+                "ALTER TABLE baselines ADD COLUMN payload TEXT NOT NULL DEFAULT ''"
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -54,13 +72,60 @@ class Database:
         )
         return {row["item_hash"] for row in cur.fetchall()}
 
+    def get_baseline_entries(self, detector_name: str) -> list[sqlite3.Row]:
+        """Full baseline rows (needed to describe REMOVED findings)."""
+        cur = self._conn.execute(
+            """
+            SELECT detector_name, item_hash, first_seen, last_seen, item_key, payload
+            FROM baselines
+            WHERE detector_name = ?
+            """,
+            (detector_name,),
+        )
+        return list(cur.fetchall())
+
+    def replace_baselines(
+        self, detector_name: str, rows: Sequence[tuple[str, str, str, str, str, str]]
+    ) -> None:
+        """
+        Replace the baseline for one detector with the current inventory.
+
+        rows: (detector_name, item_hash, first_seen, last_seen, item_key, payload)
+
+        On conflict: keep original first_seen, refresh last_seen / key / payload.
+        Rows absent from this set are deleted so reappearing items re-alert.
+        """
+        keep_hashes = {row[1] for row in rows}
+        existing = self.get_baseline_hashes(detector_name)
+        stale = existing - keep_hashes
+        if stale:
+            self._conn.executemany(
+                "DELETE FROM baselines WHERE detector_name = ? AND item_hash = ?",
+                [(detector_name, h) for h in stale],
+            )
+        if rows:
+            self._conn.executemany(
+                """
+                INSERT INTO baselines (
+                    detector_name, item_hash, first_seen, last_seen, item_key, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(detector_name, item_hash) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    item_key = excluded.item_key,
+                    payload = excluded.payload
+                """,
+                rows,
+            )
+        self._conn.commit()
+
     def upsert_baselines(
         self, rows: Sequence[tuple[str, str, str, str]]
     ) -> None:
         """
         rows: (detector_name, item_hash, first_seen, last_seen)
 
-        On conflict: keep original first_seen, refresh last_seen.
+        Legacy upsert without prune. Prefer replace_baselines for detectors.
         """
         self._conn.executemany(
             """

@@ -42,6 +42,10 @@ class Finding:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def baseline_payload(self) -> str:
+        """JSON stored alongside the baseline hash (for REMOVED reconstructions)."""
+        return json.dumps(self.to_dict(), sort_keys=True, default=str)
+
 
 class BaseDetector(ABC):
     """
@@ -52,8 +56,11 @@ class BaseDetector(ABC):
       2. Each finding gets a stable item_hash (content identity).
       3. get_baseline() loads known hashes for this detector from SQLite.
       4. diff(old, new) returns only findings whose hash is NOT in the baseline.
-      5. save_baseline() upserts all current hashes (first_seen / last_seen).
+      5. save_baseline() replaces the baseline with the current inventory
+         (prunes removed hashes so a later reappearance re-alerts).
       6. Alerts fire only for the diff set — unchanged state is silent.
+         Detectors that care about removals (e.g. suid_check) emit LOW
+         findings separately before pruning.
     """
 
     name: str = "base"
@@ -71,19 +78,26 @@ class BaseDetector(ABC):
         return self.db.get_baseline_hashes(self.name)
 
     def save_baseline(self, findings: list[Finding]) -> None:
-        """Upsert current findings into the baselines table (touch last_seen)."""
+        """Replace this detector's baseline with the current inventory."""
         now = datetime.now(timezone.utc).isoformat()
-        rows = [(self.name, f.item_hash(), now, now) for f in findings]
-        self.db.upsert_baselines(rows)
+        rows = [
+            (
+                self.name,
+                f.item_hash(),
+                now,
+                now,
+                f.item_key,
+                f.baseline_payload(),
+            )
+            for f in findings
+        ]
+        self.db.replace_baselines(self.name, rows)
 
     def diff(self, old: set[str], new: list[Finding]) -> list[Finding]:
         """
         Return only NEW findings.
 
         A finding is new when its item_hash is not in the previous baseline.
-        Removals (hash in old but not in new) are intentionally not alerted —
-        disappearance is often benign (fixed misconfig, process exit) and
-        would create noise; operators can query SQLite if they need history.
         """
         return [f for f in new if f.item_hash() not in old]
 
