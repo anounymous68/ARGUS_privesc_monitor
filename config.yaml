@@ -6,8 +6,10 @@ daemon:
 
 telegram:
   enabled: false
+  # Set via local config / secrets manager — never commit real values
   bot_token: ""
   chat_id: ""
+  max_alerts_per_minute: 10
 
 detectors:
   # Detectors registered in later steps

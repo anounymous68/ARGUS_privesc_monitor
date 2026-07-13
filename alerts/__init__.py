@@ -1,1 +1,5 @@
-"""Alert backends (Telegram, etc.) — implemented in later steps."""
+"""Alert backends."""
+
+from alerts.telegram_bot import TelegramBot
+
+__all__ = ["TelegramBot"]
