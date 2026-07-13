@@ -12,9 +12,10 @@ telegram:
   max_alerts_per_minute: 10
 
 detectors:
-  # Detectors registered in later steps
   enabled:
     - suid_check
+    - sudoers_check
+    - cron_check
   suid_check:
     scan_paths:
       - /usr/bin
@@ -22,6 +23,18 @@ detectors:
       - /bin
       - /sbin
       - /usr/local/bin
+  sudoers_check:
+    watch_files:
+      - /etc/sudoers
+    watch_dirs:
+      - /etc/sudoers.d
+  cron_check:
+    watch_files:
+      - /etc/crontab
+    watch_dirs:
+      - /etc/cron.d
+      - /var/spool/cron
+    recursive: true
 
 logging:
   level: INFO

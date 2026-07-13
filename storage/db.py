@@ -138,6 +138,34 @@ class Database:
         )
         self._conn.commit()
 
+    def upsert_baseline_entries(
+        self, rows: Sequence[tuple[str, str, str, str, str, str]]
+    ) -> None:
+        """
+        Merge baseline rows without pruning.
+
+        rows: (detector_name, item_hash, first_seen, last_seen, item_key, payload)
+
+        Used by event-driven detectors (sudoers/cron) where scan() yields
+        change events rather than a full inventory.
+        """
+        if not rows:
+            return
+        self._conn.executemany(
+            """
+            INSERT INTO baselines (
+                detector_name, item_hash, first_seen, last_seen, item_key, payload
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(detector_name, item_hash) DO UPDATE SET
+                last_seen = excluded.last_seen,
+                item_key = excluded.item_key,
+                payload = excluded.payload
+            """,
+            rows,
+        )
+        self._conn.commit()
+
     def insert_alert(
         self,
         timestamp: str,
