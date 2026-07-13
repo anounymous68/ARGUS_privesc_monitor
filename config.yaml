@@ -1,0 +1,17 @@
+# PrivescMonitor configuration (skeleton — expand in later steps)
+
+daemon:
+  scan_interval_seconds: 60
+  db_path: privesc_monitor.db
+
+telegram:
+  enabled: false
+  bot_token: ""
+  chat_id: ""
+
+detectors:
+  # Detectors registered in later steps
+  enabled: []
+
+logging:
+  level: INFO
