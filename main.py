@@ -94,16 +94,21 @@ def setup_logging(config: dict[str, Any], *, verbose: bool = False) -> None:
 
 def build_detectors(
     config: dict[str, Any], db: Database
-) -> tuple[list[BaseDetector], list[ContentWatchDetector]]:
+) -> tuple[list[BaseDetector], list[BaseDetector]]:
     """
     Instantiate enabled detectors.
 
     Returns (poll_detectors, watch_detectors).
+
+    Watch detectors are any detector registered with mode="watch".  They
+    are not required to be ContentWatchDetector subclasses — AuditParserDetector
+    uses its own background thread rather than watchdog, but is still drained
+    by watch_drain_loop every second.
     """
     det_cfg = config.get("detectors") or {}
     enabled = list(det_cfg.get("enabled") or [])
     poll: list[BaseDetector] = []
-    watch: list[ContentWatchDetector] = []
+    watch: list[BaseDetector] = []
 
     for name in enabled:
         if name not in DETECTOR_REGISTRY:
@@ -113,7 +118,6 @@ def build_detectors(
         instance_cfg = dict(det_cfg.get(name) or {})
         detector = cls(db, instance_cfg)
         if mode == "watch":
-            assert isinstance(detector, ContentWatchDetector)
             watch.append(detector)
             logger.info("Registered watch detector: %s", name)
         else:
@@ -218,7 +222,7 @@ async def poll_loop(
 
 
 async def watch_drain_loop(
-    detectors: list[ContentWatchDetector],
+    detectors: list[BaseDetector],
     *,
     db: Database,
     bot: TelegramBot,
@@ -298,9 +302,10 @@ async def run_daemon(config: dict[str, Any], *, dry_run: bool = False) -> None:
 
     # start() is defined on ContentWatchDetector and AuditParserDetector
     for detector in watch_detectors:
-        if hasattr(detector, "start"):
+        start = getattr(detector, "start", None)
+        if callable(start):
             try:
-                detector.start()
+                start()
             except Exception:
                 logger.exception("Failed to start watch detector %s", detector.name)
 
@@ -357,9 +362,10 @@ async def run_daemon(config: dict[str, Any], *, dry_run: bool = False) -> None:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         for detector in watch_detectors:
-            if hasattr(detector, "stop"):
+            stop_fn = getattr(detector, "stop", None)
+            if callable(stop_fn):
                 try:
-                    detector.stop()
+                    stop_fn()
                 except Exception:
                     logger.exception("Error stopping %s", detector.name)
         db.close()

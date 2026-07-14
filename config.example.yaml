@@ -1,0 +1,91 @@
+# ARGUS example configuration
+# Copy this file to config.yaml and fill in real values.
+# NEVER commit config.yaml — it contains secrets.
+
+daemon:
+  scan_interval_seconds: 60
+  db_path: privesc_monitor.db
+
+telegram:
+  enabled: false
+  # Obtain from @BotFather on Telegram
+  bot_token: "YOUR_BOT_TOKEN_HERE"
+  # Run: curl "https://api.telegram.org/bot<TOKEN>/getUpdates"
+  # and look for "chat":{"id": ...}
+  chat_id: "YOUR_CHAT_ID_HERE"
+  max_alerts_per_minute: 10
+
+detectors:
+  # Add or remove detector names to enable/disable them
+  enabled:
+    - suid_check
+    - sudoers_check
+    - cron_check
+    # Uncomment to enable (requires getcap):
+    # - capability_check
+    # Uncomment to enable (requires auditd + rules loaded):
+    # - audit_parser
+
+  suid_check:
+    scan_paths:
+      - /usr/bin
+      - /usr/sbin
+      - /bin
+      - /sbin
+      - /usr/local/bin
+
+  sudoers_check:
+    watch_files:
+      - /etc/sudoers
+    watch_dirs:
+      - /etc/sudoers.d
+
+  cron_check:
+    watch_files:
+      - /etc/crontab
+    watch_dirs:
+      - /etc/cron.d
+      - /var/spool/cron
+    recursive: true
+
+  capability_check:
+    # Restrict roots for speed; use "/" to scan everything
+    scan_roots:
+      - /usr
+      - /bin
+      - /sbin
+      - /usr/local
+    timeout_seconds: 60
+
+  audit_parser:
+    log_path: /var/log/audit/audit.log
+    poll_interval_seconds: 0.5
+    # Severity and label per auditd rule key — all keys optional
+    watch_keys:
+      priv_esc_root:
+        severity: critical
+        label: "Privilege escalation to root"
+      sudoers_change:
+        severity: high
+        label: "sudoers policy changed"
+      cron_change:
+        severity: high
+        label: "Cron job file changed"
+      suid_change:
+        severity: high
+        label: "SUID/SGID bit changed"
+      capset_usage:
+        severity: high
+        label: "capset() syscall (capability grant)"
+      uid_change:
+        severity: medium
+        label: "UID-change syscall"
+      module_insertion:
+        severity: critical
+        label: "Kernel module insertion"
+
+logging:
+  level: INFO
+  file: logs/privesc_monitor.log
+  max_bytes: 1048576
+  backup_count: 5

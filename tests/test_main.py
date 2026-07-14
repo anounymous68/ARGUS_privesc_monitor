@@ -53,6 +53,74 @@ class TestBuildDetectors(unittest.TestCase):
             db.close()
 
 
+class TestBuildDetectorsAuditParser(unittest.TestCase):
+    """audit_parser is mode='watch' but NOT a ContentWatchDetector subclass.
+    Enabling it must not crash build_detectors (regression for the dropped assert)."""
+
+    def test_audit_parser_in_watch_list_no_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "t.db")
+            log_file = Path(tmp) / "audit.log"
+            log_file.write_text("", encoding="utf-8")
+            config = {
+                "detectors": {
+                    "enabled": ["audit_parser"],
+                    "audit_parser": {
+                        "log_path": str(log_file),
+                        "poll_interval_seconds": 60,
+                    },
+                }
+            }
+            poll, watch = app.build_detectors(config, db)
+            self.assertEqual(poll, [])
+            self.assertEqual(len(watch), 1)
+            self.assertEqual(watch[0].name, "audit_parser")
+            db.close()
+
+    def test_all_five_detectors_build_without_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "t.db")
+            log_file = Path(tmp) / "audit.log"
+            log_file.write_text("", encoding="utf-8")
+            Path(tmp, "sudoers.d").mkdir()
+            Path(tmp, "cron.d").mkdir()
+            config = {
+                "detectors": {
+                    "enabled": [
+                        "suid_check",
+                        "capability_check",
+                        "sudoers_check",
+                        "cron_check",
+                        "audit_parser",
+                    ],
+                    "suid_check": {"scan_paths": [tmp]},
+                    "capability_check": {"scan_roots": [tmp]},
+                    "sudoers_check": {
+                        "watch_files": [str(Path(tmp) / "sudoers")],
+                        "watch_dirs": [str(Path(tmp) / "sudoers.d")],
+                    },
+                    "cron_check": {
+                        "watch_files": [str(Path(tmp) / "crontab")],
+                        "watch_dirs": [str(Path(tmp) / "cron.d")],
+                    },
+                    "audit_parser": {
+                        "log_path": str(log_file),
+                        "poll_interval_seconds": 60,
+                    },
+                }
+            }
+            poll, watch = app.build_detectors(config, db)
+            self.assertEqual(
+                sorted(d.name for d in poll),
+                ["capability_check", "suid_check"],
+            )
+            self.assertEqual(
+                sorted(d.name for d in watch),
+                ["audit_parser", "cron_check", "sudoers_check"],
+            )
+            db.close()
+
+
 class TestEmitFindingsDryRun(unittest.IsolatedAsyncioTestCase):
     async def test_dry_run_skips_telegram(self) -> None:
         tmp = tempfile.TemporaryDirectory()
