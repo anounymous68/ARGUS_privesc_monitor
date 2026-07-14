@@ -144,9 +144,7 @@ Copy the example config and fill in your values:
 ```bash
 cp config.example.yaml config.yaml
 ```
-
-> **⚠️ Never commit `config.yaml`** — it holds your Telegram bot token.
-> The file is listed in `.gitignore`. Only `config.example.yaml` is tracked.
+⚠️Note: Never Share or commit config file 
 
 ### Telegram setup
 
