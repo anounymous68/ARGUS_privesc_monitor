@@ -102,6 +102,22 @@ watches continuously and alerts the moment system state changes.
 
 ---
 
+## Screenshots
+
+**Daemon startup — ARGUS banner and detector registration**
+
+![ARGUS daemon startup](image/لقطة%20شاشة%202026-07-14%20020732.png)
+
+**Log output — detection events, Telegram dispatch, and graceful shutdown**
+
+![ARGUS log output](image/لقطة%20شاشة%202026-07-14%20021458.png)
+
+**Telegram alert — batched rate-limited HIGH findings**
+
+![Telegram alert](image/Screenshot_2026-07-14-02-08-06-97_948cd9899890cbd5c2798760b2b95377.jpg)
+
+---
+
 ## Installation
 
 ```bash
