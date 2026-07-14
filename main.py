@@ -13,8 +13,11 @@ from typing import Any, Sequence
 
 import yaml
 
+from banner import print_banner
 from alerts.telegram_bot import TelegramBot
+from detectors.audit_parser import AuditParserDetector
 from detectors.base import BaseDetector, Finding
+from detectors.capability_check import CapabilityCheckDetector
 from detectors.content_watch import ContentWatchDetector
 from detectors.cron_check import CronCheckDetector
 from detectors.sudoers_check import SudoersCheckDetector
@@ -23,11 +26,16 @@ from storage.db import Database
 
 logger = logging.getLogger("privesc_monitor")
 
-# name -> (factory, mode) where mode is "poll" or "watch"
+# name -> (factory, mode)
+# "poll"  → run_once() called every scan_interval_seconds
+# "watch" → run_once() called every WATCH_DRAIN_INTERVAL_SECONDS (1 s)
+#            (includes both watchdog and custom-tail detectors)
 DETECTOR_REGISTRY: dict[str, tuple[type[BaseDetector], str]] = {
-    "suid_check": (SuidCheckDetector, "poll"),
-    "sudoers_check": (SudoersCheckDetector, "watch"),
-    "cron_check": (CronCheckDetector, "watch"),
+    "suid_check":       (SuidCheckDetector,       "poll"),
+    "capability_check": (CapabilityCheckDetector, "poll"),
+    "sudoers_check":    (SudoersCheckDetector,    "watch"),
+    "cron_check":       (CronCheckDetector,       "watch"),
+    "audit_parser":     (AuditParserDetector,     "watch"),
 }
 
 WATCH_DRAIN_INTERVAL_SECONDS = 1.0
@@ -288,11 +296,13 @@ async def run_daemon(config: dict[str, Any], *, dry_run: bool = False) -> None:
     if dry_run:
         logger.info("Dry-run mode: findings will be logged, Telegram disabled")
 
+    # start() is defined on ContentWatchDetector and AuditParserDetector
     for detector in watch_detectors:
-        try:
-            detector.start()
-        except Exception:
-            logger.exception("Failed to start watch detector %s", detector.name)
+        if hasattr(detector, "start"):
+            try:
+                detector.start()
+            except Exception:
+                logger.exception("Failed to start watch detector %s", detector.name)
 
     stop = asyncio.Event()
     lock = asyncio.Lock()
@@ -347,10 +357,11 @@ async def run_daemon(config: dict[str, Any], *, dry_run: bool = False) -> None:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         for detector in watch_detectors:
-            try:
-                detector.stop()
-            except Exception:
-                logger.exception("Error stopping %s", detector.name)
+            if hasattr(detector, "stop"):
+                try:
+                    detector.stop()
+                except Exception:
+                    logger.exception("Error stopping %s", detector.name)
         db.close()
         logger.info("PrivescMonitor stopped")
 
@@ -381,6 +392,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    print_banner()
     args = parse_args(argv)
 
     if not args.config.is_file():

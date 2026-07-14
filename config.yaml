@@ -35,6 +35,38 @@ detectors:
       - /etc/cron.d
       - /var/spool/cron
     recursive: true
+  capability_check:
+    scan_roots:
+      - /usr
+      - /bin
+      - /sbin
+      - /usr/local
+    timeout_seconds: 60
+  audit_parser:
+    log_path: /var/log/audit/audit.log
+    poll_interval_seconds: 0.5
+    watch_keys:
+      priv_esc_root:
+        severity: critical
+        label: "Privilege escalation to root"
+      sudoers_change:
+        severity: high
+        label: "sudoers policy changed"
+      cron_change:
+        severity: high
+        label: "Cron job file changed"
+      suid_change:
+        severity: high
+        label: "SUID/SGID bit changed"
+      capset_usage:
+        severity: high
+        label: "capset() syscall (capability grant)"
+      uid_change:
+        severity: medium
+        label: "UID-change syscall"
+      module_insertion:
+        severity: critical
+        label: "Kernel module insertion"
 
 logging:
   level: INFO
